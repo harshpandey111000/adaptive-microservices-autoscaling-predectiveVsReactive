@@ -1,0 +1,84 @@
+version: "3.9"
+
+services:
+  init-db:
+    build: .
+    command: python scripts/init_db.py
+    environment:
+      METRICS_DB_URL: sqlite:////data/metrics.db
+    volumes:
+      - ./data:/data
+
+  service1:
+    build: .
+    command: uvicorn service_app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      REPLICA_ID: service-1
+
+  service2:
+    build: .
+    command: uvicorn service_app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      REPLICA_ID: service-2
+
+  service3:
+    build: .
+    command: uvicorn service_app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      REPLICA_ID: service-3
+
+  monitoring:
+    build: .
+    command: uvicorn monitoring_service.main:app --host 0.0.0.0 --port 8002
+    environment:
+      METRICS_DB_URL: sqlite:////data/metrics.db
+    volumes:
+      - ./data:/data
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+  predictor:
+    build: .
+    command: uvicorn prediction_engine.main:app --host 0.0.0.0 --port 8003
+    environment:
+      METRICS_DB_URL: sqlite:////data/metrics.db
+    volumes:
+      - ./data:/data
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+  scaler:
+    build: .
+    command: uvicorn autoscaling_controller.main:app --host 0.0.0.0 --port 8004
+    environment:
+      METRICS_DB_URL: sqlite:////data/metrics.db
+      PREDICTOR_URL: http://predictor:8003
+      TARGET_RPS_PER_REPLICA: 8
+      MIN_REPLICAS: 1
+      MAX_REPLICAS: 3
+    volumes:
+      - ./data:/data
+    ports:
+      - "8004:8004"
+    depends_on:
+      - predictor
+
+  gateway:
+    build: .
+    command: uvicorn gateway_service.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      MONITORING_URL: http://monitoring:8002
+      SCALER_URL: http://scaler:8004
+      BACKEND_1_URL: http://service1:8001
+      BACKEND_2_URL: http://service2:8001
+      BACKEND_3_URL: http://service3:8001
+    depends_on:
+      - monitoring
+      - scaler
+      - service1
+      - service2
+      - service3
