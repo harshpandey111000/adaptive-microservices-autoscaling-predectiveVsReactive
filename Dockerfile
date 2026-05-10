@@ -11,6 +11,7 @@ COPY autoscaling_controller /app/autoscaling_controller
 COPY load_generator /app/load_generator
 COPY evaluation_module /app/evaluation_module
 COPY scripts /app/scripts
+COPY models /app/models
 
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
 

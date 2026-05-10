@@ -43,6 +43,9 @@ services:
     command: uvicorn prediction_engine.main:app --host 0.0.0.0 --port 8003
     environment:
       METRICS_DB_URL: sqlite:////data/metrics.db
+      FORECAST_MODEL_PATH: /app/models/arima_workload_forecast.pkl
+    ports:
+      - "8003:8003"
     volumes:
       - ./data:/data
     depends_on:

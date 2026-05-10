@@ -67,17 +67,37 @@ def load_metrics():
         decisions = pd.read_sql(
             "SELECT timestamp, mode, observed_rps, predicted_rps, desired_replicas FROM scaling_decisions ORDER BY timestamp", engine
         )
+        forecasts = pd.read_sql(
+            "SELECT timestamp, mode, predicted_rps FROM forecast_points ORDER BY timestamp",
+            engine,
+        )
         # parse timestamps
         if not metrics.empty:
             metrics["timestamp"] = pd.to_datetime(metrics["timestamp"]) 
         if not decisions.empty:
             decisions["timestamp"] = pd.to_datetime(decisions["timestamp"]) 
-        return metrics, decisions
+        if not forecasts.empty:
+            forecasts["timestamp"] = pd.to_datetime(forecasts["timestamp"])
+        return metrics, decisions, forecasts
     except Exception as e:
         st.error(f"Error reading DB: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-metrics, decisions = load_metrics()
+metrics, decisions, forecasts = load_metrics()
+
+
+def load_future_forecast():
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            response = client.get("http://localhost:8003/forecast/series", params={"horizon": 12, "algorithm": "arima"})
+            response.raise_for_status()
+            points = response.json()["points"]
+        future = pd.DataFrame(points)
+        if not future.empty:
+            future["timestamp"] = pd.to_datetime(future["timestamp"])
+        return future
+    except Exception:
+        return pd.DataFrame()
 
 # Layout: two columns for charts
 col1, col2 = st.columns(2)
@@ -124,14 +144,19 @@ with col2:
 st.markdown("---")
 
 st.subheader("Observed vs Predicted Workload")
-if not decisions.empty:
+if not decisions.empty or not forecasts.empty:
     reactive = decisions[decisions["mode"] == "reactive"]
     predictive = decisions[decisions["mode"] == "predictive"]
+    predictive_forecasts = forecasts[forecasts["mode"] == "predictive"] if not forecasts.empty else pd.DataFrame()
     fig3 = px.line()
     if not reactive.empty:
         fig3.add_scatter(x=reactive["timestamp"], y=reactive["observed_rps"], mode="lines", name="Observed RPS (Reactive)", line=dict(color="#00CC96", dash="solid"))
     if not predictive.empty:
         fig3.add_scatter(x=predictive["timestamp"], y=predictive["predicted_rps"], mode="lines", name="Predicted RPS (Predictive)", line=dict(color="#AB63FA", dash="dash"))
+    if not predictive_forecasts.empty:
+        smoothed_forecast = predictive_forecasts.sort_values("timestamp").copy()
+        smoothed_forecast["predicted_rps"] = smoothed_forecast["predicted_rps"].rolling(window=4, min_periods=1).mean()
+        fig3.add_scatter(x=smoothed_forecast["timestamp"], y=smoothed_forecast["predicted_rps"], mode="lines", name="ARIMA Forecast History", line=dict(color="#FFA15A", dash="dot"))
     if fig3.data:
         st.plotly_chart(fig3, width='stretch')
         # Explanation
@@ -148,11 +173,23 @@ if not decisions.empty:
             st.caption("Only reactive data available.")
         elif not predictive.empty:
             st.caption("Only predictive data available.")
-        st.caption("This chart compares the actual observed request rate (RPS) in reactive mode with the predicted RPS in predictive mode. If the predictive line rises before the reactive line, the system is anticipating future load and scaling proactively. If the lines overlap, both modes are responding similarly to demand.")
+        st.caption("This chart compares observed request rate with predictive-mode forecasts. The ARIMA forecast history is smoothed for readability and comes from the trained public time-series model blended with recent live workload.")
     else:
         st.info("No workload data to display.")
 else:
     st.info("No scaling decision records yet.")
+
+future_forecast = load_future_forecast()
+if not future_forecast.empty:
+    st.subheader("Next ARIMA Workload Forecast")
+    fig_future = px.line(
+        future_forecast,
+        x="timestamp",
+        y="predicted_rps",
+        title="Short-horizon predicted RPS",
+        color_discrete_sequence=["#FFA15A"],
+    )
+    st.plotly_chart(fig_future, width='stretch')
 
 # New: Tabs for Reactive, Predictive, and Comparison
 tabs = st.tabs(["Reactive", "Predictive", "Comparison"])

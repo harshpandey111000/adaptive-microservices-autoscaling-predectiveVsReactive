@@ -12,6 +12,7 @@ from shared.config import settings
 from shared.database import SessionLocal
 from shared.models import ForecastPoint, MetricPoint
 from shared.schemas import ForecastResponse
+from prediction_engine.workload_forecaster import forecast_from_artifact
 
 app = FastAPI(title="Prediction Engine")
 
@@ -49,13 +50,34 @@ def _linear_regression_predict(series: list[float], horizon: int = 1) -> float:
     return max(0.0, float(model.predict(next_x)[0]))
 
 
+def _arima_predict(series: list[float], horizon: int = 1) -> float:
+    arima = forecast_from_artifact(settings.forecast_model_path, horizon=horizon)
+    if not arima.available:
+        return _linear_regression_predict(series, horizon=horizon)
+
+    runtime_prediction = _linear_regression_predict(series, horizon=horizon)
+    if not series:
+        return arima.value
+
+    recent_window = min(6, len(series))
+    runtime_level = float(np.mean(series[-recent_window:]))
+    if runtime_level <= 0 or arima.baseline_mean <= 0:
+        return arima.value
+
+    scaled_arima = arima.value * (runtime_level / arima.baseline_mean)
+    blended = 0.65 * scaled_arima + 0.35 * runtime_prediction
+    return max(0.0, float(blended))
+
+
 @app.get("/forecast", response_model=ForecastResponse)
-def forecast(mode: str = "predictive", algorithm: str = "linear_regression") -> ForecastResponse:
+def forecast(mode: str = "predictive", algorithm: str = "arima") -> ForecastResponse:
     series = _fetch_rps_series()
     observed = series[-1] if series else 0.0
 
     if mode == "reactive":
         predicted = observed
+    elif algorithm == "arima":
+        predicted = _arima_predict(series)
     elif algorithm == "moving_average":
         predicted = _moving_average_predict(series)
     else:
@@ -66,3 +88,28 @@ def forecast(mode: str = "predictive", algorithm: str = "linear_regression") -> 
         session.commit()
 
     return ForecastResponse(mode=mode, predicted_rps=predicted, observed_rps=observed)
+
+
+@app.get("/forecast/series")
+def forecast_series(horizon: int = 12, algorithm: str = "arima") -> dict:
+    horizon = max(1, min(horizon, 48))
+    series = _fetch_rps_series()
+    now = datetime.utcnow()
+
+    points = []
+    for step in range(1, horizon + 1):
+        if algorithm == "moving_average":
+            value = _moving_average_predict(series, horizon=step)
+        elif algorithm == "linear_regression":
+            value = _linear_regression_predict(series, horizon=step)
+        else:
+            value = _arima_predict(series, horizon=step)
+        points.append(
+            {
+                "timestamp": (now + timedelta(seconds=step * 5)).isoformat(),
+                "predicted_rps": value,
+                "algorithm": algorithm,
+            }
+        )
+
+    return {"mode": "predictive", "algorithm": algorithm, "points": points}
