@@ -1,4 +1,7 @@
-"""Pydantic models used by service APIs."""
+"""Pydantic models used by service APIs.
+
+These schemas keep request and response contracts consistent across services.
+"""
 from __future__ import annotations
 
 from datetime import datetime

@@ -1,4 +1,7 @@
-"""API gateway with request routing and metrics emission."""
+"""API gateway with request routing and metrics emission.
+
+The gateway enforces the active replica count chosen by the autoscaler.
+"""
 from __future__ import annotations
 
 import itertools

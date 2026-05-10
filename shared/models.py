@@ -1,4 +1,7 @@
-"""Database models for metrics, predictions, and scaling decisions."""
+"""Database models for metrics, predictions, and scaling decisions.
+
+The tables capture the experiment history used by the dashboard and evaluator.
+"""
 from __future__ import annotations
 
 from datetime import datetime

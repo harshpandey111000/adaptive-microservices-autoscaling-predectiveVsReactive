@@ -1,4 +1,7 @@
-"""Traffic simulator for generating bursty and trend-based workloads."""
+"""Traffic simulator for generating bursty and trend-based workloads.
+
+The generated traffic helps compare reactive and predictive scaling behavior.
+"""
 from __future__ import annotations
 
 import argparse

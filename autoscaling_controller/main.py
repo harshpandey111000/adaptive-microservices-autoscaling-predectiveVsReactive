@@ -1,4 +1,7 @@
-"""Auto-scaling controller implementing reactive and predictive policies."""
+"""Auto-scaling controller implementing reactive and predictive policies.
+
+The controller converts workload forecasts into bounded active replica counts.
+"""
 from __future__ import annotations
 
 import math

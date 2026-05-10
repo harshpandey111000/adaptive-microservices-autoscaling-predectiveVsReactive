@@ -1,4 +1,7 @@
-"""Monitoring service that stores and aggregates workload metrics."""
+"""Monitoring service that stores and aggregates workload metrics.
+
+The scaler and dashboard both depend on this service for recent system state.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta

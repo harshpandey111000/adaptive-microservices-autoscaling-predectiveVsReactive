@@ -1,4 +1,7 @@
-"""Prediction engine for workload forecasting."""
+"""Prediction engine for workload forecasting.
+
+Predictive mode defaults to the trained ARIMA workload model when available.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta

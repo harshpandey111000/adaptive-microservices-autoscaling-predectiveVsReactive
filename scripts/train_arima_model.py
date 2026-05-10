@@ -1,4 +1,7 @@
-"""Train the ARIMA workload model used by the prediction engine."""
+"""Train the ARIMA workload model used by the prediction engine.
+
+The generated artifact is loaded by predictive autoscaling mode.
+"""
 from __future__ import annotations
 
 import argparse

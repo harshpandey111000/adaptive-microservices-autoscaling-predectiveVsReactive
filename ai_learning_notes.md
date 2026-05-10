@@ -2,6 +2,8 @@
 
 This file collects key concepts, explanations, and implementation details from the project to support future dissertation/report writing. Use this as a reference for generating comprehensive documentation or answering questions about the project.
 
+These notes summarize the current implemented system rather than a separate design proposal.
+
 ---
 
 ## Key Concepts

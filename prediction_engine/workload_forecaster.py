@@ -2,6 +2,7 @@
 
 The external training dataset is converted into an RPS-like signal so the
 autoscaler can use a real public time series while keeping the project small.
+The helper functions are shared by the training script and prediction API.
 """
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Initialize database tables and baseline scaler state."""
+"""Initialize database tables and baseline scaler state.
+
+This script runs before the runtime services in Docker Compose.
+"""
 from datetime import datetime
 
 from shared.database import SessionLocal, engine

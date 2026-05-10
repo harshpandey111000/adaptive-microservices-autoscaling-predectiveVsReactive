@@ -1,4 +1,7 @@
-"""SQLAlchemy engine/session setup."""
+"""SQLAlchemy engine/session setup.
+
+All services use this shared session factory for the metrics database.
+"""
 from __future__ import annotations
 
 from sqlalchemy import create_engine

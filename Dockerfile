@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+# Shared image used by all FastAPI services in the Compose stack.
 WORKDIR /app
 COPY pyproject.toml /app/pyproject.toml
 COPY shared /app/shared

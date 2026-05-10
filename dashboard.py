@@ -10,6 +10,7 @@ import plotly.express as px
 import httpx
 from sqlalchemy import create_engine
 
+# Dashboard module for visualizing latency, forecasts, and replica decisions.
 st.set_page_config(page_title="Autoscaling Dashboard", layout="wide")
 st.title("Microservices Autoscaling Evaluation Dashboard")
 

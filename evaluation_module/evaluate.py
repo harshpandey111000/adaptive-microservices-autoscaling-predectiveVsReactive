@@ -1,4 +1,7 @@
-"""Generate evaluation charts comparing reactive and predictive scaling."""
+"""Generate evaluation charts comparing reactive and predictive scaling.
+
+The plots provide static artifacts for reports and thesis appendices.
+"""
 from __future__ import annotations
 
 from pathlib import Path

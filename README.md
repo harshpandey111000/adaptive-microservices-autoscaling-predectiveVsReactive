@@ -2,6 +2,8 @@
 
 Production-style, dockerized microservices project that demonstrates **reactive vs predictive horizontal auto-scaling** using workload forecasting.
 
+This repository is structured for both implementation testing and thesis/report documentation.
+
 ## Implemented Modules
 
 - **API Gateway** (`gateway_service`): forwards client requests and publishes latency/status metrics.

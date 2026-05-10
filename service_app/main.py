@@ -1,4 +1,7 @@
-"""Stateless microservice replica implementation."""
+"""Stateless microservice replica implementation.
+
+This module is intentionally small so each Docker replica behaves identically.
+"""
 from __future__ import annotations
 
 import os

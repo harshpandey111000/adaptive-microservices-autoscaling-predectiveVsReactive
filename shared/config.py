@@ -1,4 +1,7 @@
-"""Shared configuration helpers."""
+"""Shared configuration helpers.
+
+Environment variables allow the same code to run locally and inside containers.
+"""
 from __future__ import annotations
 
 import os
