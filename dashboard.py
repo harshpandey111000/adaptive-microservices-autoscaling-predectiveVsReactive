@@ -87,6 +87,27 @@ def load_metrics():
 metrics, decisions, forecasts = load_metrics()
 
 
+def add_mode_to_metrics(metrics_df: pd.DataFrame, decisions_df: pd.DataFrame) -> pd.DataFrame:
+    if metrics_df.empty:
+        return metrics_df
+    if decisions_df.empty:
+        tagged = metrics_df.copy()
+        tagged["mode"] = "unknown"
+        return tagged
+    timeline = decisions_df[["timestamp", "mode"]].sort_values("timestamp")
+    tagged = pd.merge_asof(
+        metrics_df.sort_values("timestamp"),
+        timeline,
+        on="timestamp",
+        direction="backward",
+    )
+    tagged["mode"] = tagged["mode"].fillna("unknown")
+    return tagged
+
+
+metrics_by_mode = add_mode_to_metrics(metrics, decisions)
+
+
 def load_future_forecast():
     try:
         with httpx.Client(timeout=3.0) as client:
@@ -198,7 +219,7 @@ tabs = st.tabs(["Reactive", "Predictive", "Comparison"])
 with tabs[0]:
     st.header("Reactive Mode")
     # Filter for reactive
-    reactive_metrics = metrics.copy() if not metrics.empty else pd.DataFrame()
+    reactive_metrics = metrics_by_mode[metrics_by_mode["mode"] == "reactive"] if not metrics_by_mode.empty else pd.DataFrame()
     reactive_decisions = decisions[decisions["mode"] == "reactive"] if not decisions.empty else pd.DataFrame()
     # Latency chart
     st.subheader("Latency Stability (Reactive)")
@@ -219,12 +240,13 @@ with tabs[0]:
 with tabs[1]:
     st.header("Predictive Mode")
     predictive_decisions = decisions[decisions["mode"] == "predictive"] if not decisions.empty else pd.DataFrame()
+    predictive_metrics = metrics_by_mode[metrics_by_mode["mode"] == "predictive"] if not metrics_by_mode.empty else pd.DataFrame()
     # Latency chart (same as above, for now)
     st.subheader("Latency Stability (Predictive)")
-    if not metrics.empty:
-        metrics = metrics.sort_values("timestamp")
-        metrics["rolling_latency"] = metrics["latency_ms"].rolling(window=20, min_periods=1).mean()
-        fig = px.line(metrics, x="timestamp", y="rolling_latency", title="Rolling Latency (ms) - Predictive", labels={"rolling_latency": "Latency (ms)", "timestamp": "Time"}, color_discrete_sequence=["#AB63FA"])
+    if not predictive_metrics.empty:
+        predictive_metrics = predictive_metrics.sort_values("timestamp")
+        predictive_metrics["rolling_latency"] = predictive_metrics["latency_ms"].rolling(window=20, min_periods=1).mean()
+        fig = px.line(predictive_metrics, x="timestamp", y="rolling_latency", title="Rolling Latency (ms) - Predictive", labels={"rolling_latency": "Latency (ms)", "timestamp": "Time"}, color_discrete_sequence=["#AB63FA"])
         fig.add_hline(y=120, line_dash="dash", line_color="red", annotation_text="SLA 120ms")
         st.plotly_chart(fig, width='stretch')
         st.caption("This chart shows the rolling average latency of requests in predictive mode. The goal is to keep the latency (in ms) below the SLA threshold (120ms).")
@@ -243,27 +265,37 @@ with tabs[2]:
         avg_predictive_replicas = predictive_decisions["desired_replicas"].mean() if not predictive_decisions.empty else 0
         peak_reactive_replicas = reactive_decisions["desired_replicas"].max() if not reactive_decisions.empty else 0
         peak_predictive_replicas = predictive_decisions["desired_replicas"].max() if not predictive_decisions.empty else 0
-        # Latency
-        avg_latency = metrics["latency_ms"].mean() if not metrics.empty else 0
-        peak_latency = metrics["latency_ms"].max() if not metrics.empty else 0
+        reactive_latency = metrics_by_mode[metrics_by_mode["mode"] == "reactive"] if not metrics_by_mode.empty else pd.DataFrame()
+        predictive_latency = metrics_by_mode[metrics_by_mode["mode"] == "predictive"] if not metrics_by_mode.empty else pd.DataFrame()
+        avg_reactive_latency = reactive_latency["latency_ms"].mean() if not reactive_latency.empty else 0
+        avg_predictive_latency = predictive_latency["latency_ms"].mean() if not predictive_latency.empty else 0
+        p95_reactive_latency = reactive_latency["latency_ms"].quantile(0.95) if not reactive_latency.empty else 0
+        p95_predictive_latency = predictive_latency["latency_ms"].quantile(0.95) if not predictive_latency.empty else 0
+        reactive_sla_violations = reactive_latency["latency_ms"].gt(120).mean() * 100 if not reactive_latency.empty else 0
+        predictive_sla_violations = predictive_latency["latency_ms"].gt(120).mean() * 100 if not predictive_latency.empty else 0
         comp_df = pd.DataFrame({
             "Mode": ["Reactive", "Predictive"],
             "Avg Replicas": [avg_reactive_replicas, avg_predictive_replicas],
             "Peak Replicas": [peak_reactive_replicas, peak_predictive_replicas],
-            "Avg Latency": [avg_latency, avg_latency],
-            "Peak Latency": [peak_latency, peak_latency],
+            "Avg Latency": [avg_reactive_latency, avg_predictive_latency],
+            "P95 Latency": [p95_reactive_latency, p95_predictive_latency],
+            "SLA Violations %": [reactive_sla_violations, predictive_sla_violations],
         })
         st.subheader("Average and Peak Replicas")
         fig_bar = px.bar(comp_df, x="Mode", y=["Avg Replicas", "Peak Replicas"], barmode="group", title="Replicas Comparison", labels={"value": "Replicas", "variable": "Metric"}, color_discrete_map={"Avg Replicas": "#00CC96", "Peak Replicas": "#AB63FA"})
         st.plotly_chart(fig_bar, width='stretch')
         st.caption("This bar chart compares the average and peak number of replicas used in reactive and predictive modes. Ideally, we want fewer replicas (lower is better) while maintaining performance.")
-        st.subheader("Average and Peak Latency")
-        fig_bar2 = px.bar(comp_df, x="Mode", y=["Avg Latency", "Peak Latency"], barmode="group", title="Latency Comparison", labels={"value": "Latency (ms)", "variable": "Metric"}, color_discrete_map={"Avg Latency": "#00CC96", "Peak Latency": "#AB63FA"})
+        st.subheader("Latency and SLA Impact")
+        fig_bar2 = px.bar(comp_df, x="Mode", y=["Avg Latency", "P95 Latency"], barmode="group", title="Latency Comparison", labels={"value": "Latency (ms)", "variable": "Metric"}, color_discrete_map={"Avg Latency": "#00CC96", "P95 Latency": "#AB63FA"})
+        fig_bar2.add_hline(y=120, line_dash="dash", line_color="red", annotation_text="SLA 120ms")
         st.plotly_chart(fig_bar2, width='stretch')
-        st.caption("This bar chart compares the average and peak latency in milliseconds for reactive and predictive modes. Lower latency is better, indicating faster response times.")
+        fig_bar3 = px.bar(comp_df, x="Mode", y="SLA Violations %", title="SLA Violation Rate", labels={"SLA Violations %": "Requests above SLA (%)"}, color="Mode", color_discrete_map={"Reactive": "#00CC96", "Predictive": "#AB63FA"})
+        st.plotly_chart(fig_bar3, width='stretch')
+        st.caption("Latency is separated by the scaler mode active when each request was recorded, so the comparison is no longer duplicated across modes.")
         # Performance summary
         summary = ""
-        if avg_latency > 120:
+        best_avg_latency = min(value for value in [avg_reactive_latency, avg_predictive_latency] if value > 0) if (avg_reactive_latency or avg_predictive_latency) else 0
+        if best_avg_latency > 120:
             if avg_reactive_replicas < avg_predictive_replicas:
                 summary = "Predictive mode used more replicas to try to keep latency low, but average latency was still above SLA."
             else:

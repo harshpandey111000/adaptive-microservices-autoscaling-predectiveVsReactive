@@ -6,11 +6,57 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 from sqlalchemy import create_engine
 
 from shared.config import settings
+
+SLA_MS = 120
+MODE_COLORS = {"reactive": "#1f77b4", "predictive": "#d62728"}
+
+
+def _add_mode_to_metrics(metrics: pd.DataFrame, decisions: pd.DataFrame) -> pd.DataFrame:
+    if metrics.empty or decisions.empty:
+        return metrics.assign(mode="unknown")
+
+    timeline = decisions[["timestamp", "mode"]].sort_values("timestamp")
+    aligned = pd.merge_asof(
+        metrics.sort_values("timestamp"),
+        timeline,
+        on="timestamp",
+        direction="backward",
+    )
+    aligned["mode"] = aligned["mode"].fillna("unknown")
+    return aligned
+
+
+def _mode_summary(metrics: pd.DataFrame, decisions: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for mode in ["reactive", "predictive"]:
+        mode_metrics = metrics[metrics["mode"] == mode]
+        mode_decisions = decisions[decisions["mode"] == mode]
+        if mode_metrics.empty and mode_decisions.empty:
+            continue
+
+        rows.append(
+            {
+                "mode": mode,
+                "avg_latency_ms": mode_metrics["latency_ms"].mean() if not mode_metrics.empty else 0.0,
+                "p95_latency_ms": mode_metrics["latency_ms"].quantile(0.95) if not mode_metrics.empty else 0.0,
+                "sla_violation_pct": (
+                    (mode_metrics["latency_ms"].gt(SLA_MS).mean() * 100) if not mode_metrics.empty else 0.0
+                ),
+                "avg_replicas": mode_decisions["desired_replicas"].mean() if not mode_decisions.empty else 0.0,
+                "peak_replicas": mode_decisions["desired_replicas"].max() if not mode_decisions.empty else 0.0,
+                "avg_predicted_rps": mode_decisions["predicted_rps"].mean() if not mode_decisions.empty else 0.0,
+                "avg_observed_rps": mode_decisions["observed_rps"].mean() if not mode_decisions.empty else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def export_plots(output_dir: str = "outputs") -> None:
@@ -26,40 +72,142 @@ def export_plots(output_dir: str = "outputs") -> None:
     if not metrics.empty:
         metrics["timestamp"] = pd.to_datetime(metrics["timestamp"])
         metrics = metrics.sort_values("timestamp")
-        metrics["rolling_latency"] = metrics["latency_ms"].rolling(window=20, min_periods=1).mean()
+    if not decisions.empty:
+        decisions["timestamp"] = pd.to_datetime(decisions["timestamp"])
+        decisions = decisions.sort_values("timestamp")
 
-        plt.figure(figsize=(10, 4))
-        plt.plot(metrics["timestamp"], metrics["rolling_latency"], label="rolling latency (ms)")
-        plt.axhline(200, color="r", linestyle="--", label="SLA 200ms")
-        plt.title("Latency Stability")
-        plt.legend()
+    metrics_with_mode = _add_mode_to_metrics(metrics, decisions) if not metrics.empty else metrics
+    summary = _mode_summary(metrics_with_mode, decisions) if not decisions.empty else pd.DataFrame()
+
+    if not metrics.empty:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        plotted = False
+        for mode in ["reactive", "predictive"]:
+            subset = metrics_with_mode[metrics_with_mode["mode"] == mode].copy()
+            if subset.empty:
+                continue
+            subset = subset.sort_values("timestamp")
+            subset["rolling_avg_ms"] = subset["latency_ms"].rolling(window=20, min_periods=1).mean()
+            subset["rolling_p95_ms"] = subset["latency_ms"].rolling(window=40, min_periods=5).quantile(0.95)
+            ax.plot(
+                subset["timestamp"],
+                subset["rolling_avg_ms"],
+                color=MODE_COLORS[mode],
+                linewidth=2,
+                label=f"{mode} rolling avg",
+            )
+            ax.plot(
+                subset["timestamp"],
+                subset["rolling_p95_ms"],
+                color=MODE_COLORS[mode],
+                linestyle=":",
+                alpha=0.8,
+                label=f"{mode} rolling p95",
+            )
+            plotted = True
+
+        if not plotted:
+            metrics["rolling_avg_ms"] = metrics["latency_ms"].rolling(window=20, min_periods=1).mean()
+            ax.plot(metrics["timestamp"], metrics["rolling_avg_ms"], color="#4c78a8", linewidth=2, label="rolling avg")
+
+        ax.axhline(SLA_MS, color="#b00020", linestyle="--", linewidth=1.5, label=f"SLA {SLA_MS} ms")
+        ax.set_title("Latency Stability by Scaling Mode")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Latency (ms)")
+        ax.grid(True, alpha=0.25)
+        ax.legend(ncol=2, fontsize=8)
         plt.tight_layout()
         plt.savefig(out / "latency_stability.png")
         plt.close()
 
     if not decisions.empty:
-        decisions["timestamp"] = pd.to_datetime(decisions["timestamp"])
-        plt.figure(figsize=(10, 4))
+        fig, ax1 = plt.subplots(figsize=(12, 5))
+        ax2 = ax1.twinx()
         for mode in ["reactive", "predictive"]:
             subset = decisions[decisions["mode"] == mode]
             if subset.empty:
                 continue
-            plt.plot(subset["timestamp"], subset["desired_replicas"], label=f"replicas ({mode})")
-        plt.title("Replica Decisions by Scaling Mode")
-        plt.legend()
+            ax1.step(
+                subset["timestamp"],
+                subset["desired_replicas"],
+                where="post",
+                linewidth=2.2,
+                color=MODE_COLORS[mode],
+                label=f"{mode} replicas",
+            )
+            ax2.plot(
+                subset["timestamp"],
+                subset["observed_rps"],
+                color=MODE_COLORS[mode],
+                alpha=0.35,
+                linewidth=1.2,
+                label=f"{mode} observed RPS",
+            )
+
+        ax1.set_title("Replica Decisions with Workload Context")
+        ax1.set_xlabel("Time")
+        ax1.set_ylabel("Desired replicas")
+        ax2.set_ylabel("Observed RPS")
+        ax1.set_yticks(sorted(decisions["desired_replicas"].unique()))
+        ax1.grid(True, axis="y", alpha=0.25)
+        lines_1, labels_1 = ax1.get_legend_handles_labels()
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, ncol=2, fontsize=8, loc="upper left")
         plt.tight_layout()
         plt.savefig(out / "replica_decisions.png")
         plt.close()
 
-        plt.figure(figsize=(10, 4))
-        reactive = decisions[decisions["mode"] == "reactive"]
-        predictive = decisions[decisions["mode"] == "predictive"]
-        if not reactive.empty:
-            plt.plot(reactive["timestamp"], reactive["observed_rps"], label="observed rps (reactive)")
-        if not predictive.empty:
-            plt.plot(predictive["timestamp"], predictive["predicted_rps"], label="predicted rps (predictive)")
-        plt.title("Observed vs Predicted Workload")
-        plt.legend()
+        fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
+        for mode in ["reactive", "predictive"]:
+            subset = decisions[decisions["mode"] == mode].copy()
+            if subset.empty:
+                continue
+            color = MODE_COLORS[mode]
+            axes[0].plot(
+                subset["timestamp"],
+                subset["observed_rps"],
+                color=color,
+                alpha=0.45,
+                linewidth=1.5,
+                label=f"{mode} observed",
+            )
+            axes[0].plot(
+                subset["timestamp"],
+                subset["predicted_rps"],
+                color=color,
+                linestyle="--" if mode == "predictive" else ":",
+                linewidth=2,
+                label=f"{mode} forecast",
+            )
+            subset["forecast_gap"] = subset["predicted_rps"] - subset["observed_rps"]
+            axes[1].plot(
+                subset["timestamp"],
+                subset["forecast_gap"],
+                color=color,
+                linewidth=1.8,
+                label=f"{mode} forecast - observed",
+            )
+
+        axes[0].set_title("Observed Workload vs Forecasted Workload")
+        axes[0].set_ylabel("RPS")
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(ncol=2, fontsize=8)
+        axes[1].axhline(0, color="#333333", linewidth=1)
+        axes[1].set_ylabel("RPS gap")
+        axes[1].set_xlabel("Time")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(ncol=2, fontsize=8)
+
+        if not summary.empty:
+            text_lines = []
+            for row in summary.itertuples(index=False):
+                text_lines.append(
+                    f"{row.mode}: avg replicas {row.avg_replicas:.1f}, "
+                    f"p95 latency {row.p95_latency_ms:.0f} ms, "
+                    f"SLA violations {row.sla_violation_pct:.1f}%"
+                )
+            fig.text(0.01, 0.01, "\n".join(text_lines), fontsize=8, va="bottom")
+
         plt.tight_layout()
         plt.savefig(out / "workload_comparison.png")
         plt.close()

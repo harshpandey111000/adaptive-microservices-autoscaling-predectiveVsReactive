@@ -11,8 +11,8 @@ This repository is structured for both implementation testing and thesis/report 
 - **Monitoring Service** (`monitoring_service`): stores time-series metrics in SQLite.
 - **Prediction Engine** (`prediction_engine`): supports **ARIMA**, Linear Regression, and Moving Average forecasting.
 - **Auto-Scaling Controller** (`autoscaling_controller`): computes desired replicas in `reactive` or `predictive` modes.
-- **Load Generator** (`load_generator`): profile-driven synthetic workload simulation.
-- **Evaluation Module** (`evaluation_module`): auto-generates comparison plots.
+- **Load Generator** (`load_generator`): replays a public workload-derived RPS series, with a synthetic fallback profile.
+- **Evaluation Module** (`evaluation_module`): auto-generates latency, scaling, and workload comparison plots.
 
 ## Architecture
 
@@ -68,14 +68,29 @@ This writes:
 docker compose up --build -d
 ```
 
-### 3) Generate workload (reactive mode)
+### 3) Generate realistic workload (reactive mode)
 
 ```bash
 curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"reactive"}'
 python -m load_generator.run_load --base-url http://localhost:8000 --duration 90
 ```
 
-### 4) Generate workload (predictive mode)
+By default, the load generator replays `data/processed/workload_series.csv`, which
+is derived from the public NAB Twitter-volume dataset. Each second of the
+experiment uses one point from the dataset-shaped RPS signal. To replay a
+specific segment or scale the generated request rate:
+
+```bash
+python -m load_generator.run_load --duration 120 --start-index 400 --min-rps 2 --max-rps 24
+```
+
+The old four-phase workload is still available:
+
+```bash
+python -m load_generator.run_load --profile synthetic --duration 90
+```
+
+### 4) Generate realistic workload (predictive mode)
 
 ```bash
 curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"predictive"}'
@@ -97,6 +112,11 @@ Generated outputs are written to:
 - `outputs/latency_stability.png`
 - `outputs/replica_decisions.png`
 - `outputs/workload_comparison.png`
+
+The latency plot separates rolling average and p95 latency by scaler mode. The
+replica plot overlays desired replicas with observed RPS so scaling decisions
+have workload context. The workload comparison plot shows observed RPS, forecast
+RPS, and the forecast gap, with a compact mode summary for reporting.
 
 ## Horizontal Scaling Simulation
 
