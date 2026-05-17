@@ -1,8 +1,0 @@
-autoscaling_controller
-evaluation_module
-gateway_service
-load_generator
-monitoring_service
-prediction_engine
-service_app
-shared
