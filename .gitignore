@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime SQLite databases are generated locally by the services.
+data/*.db
+data/*.db.bak
+data/*.db.corrupt
