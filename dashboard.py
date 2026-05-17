@@ -10,6 +10,9 @@ import plotly.express as px
 import httpx
 from sqlalchemy import create_engine
 
+from prediction_engine.workload_forecaster import load_arima_artifact, load_random_forest_artifact
+from shared.config import settings
+
 # Dashboard module for visualizing latency, forecasts, and replica decisions.
 st.set_page_config(page_title="Autoscaling Dashboard", layout="wide")
 st.title("Microservices Autoscaling Evaluation Dashboard")
@@ -19,12 +22,12 @@ output_dir = Path("outputs")
 # Controls
 st.sidebar.header("Controls")
 mode = st.sidebar.selectbox("Mode", ["reactive", "predictive"])  # for future use
+algorithm = st.sidebar.selectbox("Predictive model", ["arima", "random_forest"])
 duration = st.sidebar.slider("Load duration (seconds)", 10, 300, 60, step=10)
 start_load = st.sidebar.button("Start load")
 refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 5, 60, 10)
 
 # Database
-from shared.config import settings
 engine = create_engine(settings.metrics_db_url)
 
 
@@ -38,11 +41,15 @@ if start_load:
     try:
         with httpx.Client(timeout=5.0) as client:
             client.post(f"http://localhost:{settings.gateway_port + 4}/mode", json={"mode": mode})
+            if mode == "predictive":
+                client.post(f"http://localhost:{settings.gateway_port + 4}/algorithm", json={"algorithm": algorithm})
     except Exception:
         # fallback to scaler endpoint directly
         try:
             with httpx.Client(timeout=5.0) as client:
                 client.post(f"http://localhost:8004/mode", json={"mode": mode})
+                if mode == "predictive":
+                    client.post("http://localhost:8004/algorithm", json={"algorithm": algorithm})
         except Exception:
             st.error("Failed to set mode on scaler service; is it running and exposed on localhost:8004?")
 
@@ -68,10 +75,17 @@ def load_metrics():
         decisions = pd.read_sql(
             "SELECT timestamp, mode, observed_rps, predicted_rps, desired_replicas FROM scaling_decisions ORDER BY timestamp", engine
         )
-        forecasts = pd.read_sql(
-            "SELECT timestamp, mode, predicted_rps FROM forecast_points ORDER BY timestamp",
-            engine,
-        )
+        try:
+            forecasts = pd.read_sql(
+                "SELECT timestamp, mode, algorithm, predicted_rps FROM forecast_points ORDER BY timestamp",
+                engine,
+            )
+        except Exception:
+            forecasts = pd.read_sql(
+                "SELECT timestamp, mode, predicted_rps FROM forecast_points ORDER BY timestamp",
+                engine,
+            )
+            forecasts["algorithm"] = "unknown"
         # parse timestamps
         if not metrics.empty:
             metrics["timestamp"] = pd.to_datetime(metrics["timestamp"]) 
@@ -108,10 +122,10 @@ def add_mode_to_metrics(metrics_df: pd.DataFrame, decisions_df: pd.DataFrame) ->
 metrics_by_mode = add_mode_to_metrics(metrics, decisions)
 
 
-def load_future_forecast():
+def load_future_forecast(selected_algorithm: str):
     try:
         with httpx.Client(timeout=3.0) as client:
-            response = client.get("http://localhost:8003/forecast/series", params={"horizon": 12, "algorithm": "arima"})
+            response = client.get("http://localhost:8003/forecast/series", params={"horizon": 12, "algorithm": selected_algorithm})
             response.raise_for_status()
             points = response.json()["points"]
         future = pd.DataFrame(points)
@@ -120,6 +134,26 @@ def load_future_forecast():
         return future
     except Exception:
         return pd.DataFrame()
+
+
+def load_model_comparison() -> pd.DataFrame:
+    rows = []
+    for model_name, artifact in [
+        ("ARIMA", load_arima_artifact(settings.forecast_model_path)),
+        ("Random Forest", load_random_forest_artifact(settings.rf_forecast_model_path)),
+    ]:
+        if artifact is None:
+            continue
+        metrics = artifact.get("metrics", {})
+        rows.append(
+            {
+                "Model": model_name,
+                "MAE": float(metrics.get("mae", 0.0)),
+                "RMSE": float(metrics.get("rmse", 0.0)),
+                "MAPE %": float(metrics.get("mape", 0.0)),
+            }
+        )
+    return pd.DataFrame(rows)
 
 # Layout: two columns for charts
 col1, col2 = st.columns(2)
@@ -176,9 +210,13 @@ if not decisions.empty or not forecasts.empty:
     if not predictive.empty:
         fig3.add_scatter(x=predictive["timestamp"], y=predictive["predicted_rps"], mode="lines", name="Predicted RPS (Predictive)", line=dict(color="#AB63FA", dash="dash"))
     if not predictive_forecasts.empty:
-        smoothed_forecast = predictive_forecasts.sort_values("timestamp").copy()
-        smoothed_forecast["predicted_rps"] = smoothed_forecast["predicted_rps"].rolling(window=4, min_periods=1).mean()
-        fig3.add_scatter(x=smoothed_forecast["timestamp"], y=smoothed_forecast["predicted_rps"], mode="lines", name="ARIMA Forecast History", line=dict(color="#FFA15A", dash="dot"))
+        for forecast_algorithm, color in [("arima", "#FFA15A"), ("random_forest", "#2CA02C")]:
+            smoothed_forecast = predictive_forecasts[predictive_forecasts["algorithm"] == forecast_algorithm].sort_values("timestamp").copy()
+            if smoothed_forecast.empty:
+                continue
+            smoothed_forecast["predicted_rps"] = smoothed_forecast["predicted_rps"].rolling(window=4, min_periods=1).mean()
+            label = forecast_algorithm.replace("_", " ").title()
+            fig3.add_scatter(x=smoothed_forecast["timestamp"], y=smoothed_forecast["predicted_rps"], mode="lines", name=f"{label} Forecast History", line=dict(color=color, dash="dot"))
     if fig3.data:
         st.plotly_chart(fig3, width='stretch')
         # Explanation
@@ -195,15 +233,15 @@ if not decisions.empty or not forecasts.empty:
             st.caption("Only reactive data available.")
         elif not predictive.empty:
             st.caption("Only predictive data available.")
-        st.caption("This chart compares observed request rate with predictive-mode forecasts. The ARIMA forecast history is smoothed for readability and comes from the trained public time-series model blended with recent live workload.")
+        st.caption("This chart compares observed request rate with predictive-mode forecasts. Forecast histories are smoothed for readability and come from trained public time-series models blended with recent live workload.")
     else:
         st.info("No workload data to display.")
 else:
     st.info("No scaling decision records yet.")
 
-future_forecast = load_future_forecast()
+future_forecast = load_future_forecast(algorithm)
 if not future_forecast.empty:
-    st.subheader("Next ARIMA Workload Forecast")
+    st.subheader(f"Next {algorithm.replace('_', ' ').title()} Workload Forecast")
     fig_future = px.line(
         future_forecast,
         x="timestamp",
@@ -212,6 +250,21 @@ if not future_forecast.empty:
         color_discrete_sequence=["#FFA15A"],
     )
     st.plotly_chart(fig_future, width='stretch')
+
+model_comparison = load_model_comparison()
+if not model_comparison.empty:
+    st.subheader("Forecast Model Comparison")
+    fig_models = px.bar(
+        model_comparison,
+        x="Model",
+        y=["MAE", "RMSE"],
+        barmode="group",
+        title="Holdout Forecast Error",
+        labels={"value": "RPS error", "variable": "Metric"},
+        color_discrete_map={"MAE": "#4C78A8", "RMSE": "#F58518"},
+    )
+    st.plotly_chart(fig_models, width='stretch')
+    st.dataframe(model_comparison, width='stretch')
 
 # New: Tabs for Reactive, Predictive, and Comparison
 tabs = st.tabs(["Reactive", "Predictive", "Comparison"])

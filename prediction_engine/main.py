@@ -15,7 +15,12 @@ from shared.config import settings
 from shared.database import SessionLocal
 from shared.models import ForecastPoint, MetricPoint
 from shared.schemas import ForecastResponse
-from prediction_engine.workload_forecaster import forecast_from_artifact
+from prediction_engine.workload_forecaster import (
+    forecast_from_artifact,
+    forecast_random_forest_from_artifact,
+    load_arima_artifact,
+    load_random_forest_artifact,
+)
 
 app = FastAPI(title="Prediction Engine")
 
@@ -72,6 +77,25 @@ def _arima_predict(series: list[float], horizon: int = 1) -> float:
     return max(0.0, float(blended))
 
 
+def _random_forest_predict(series: list[float], horizon: int = 1) -> float:
+    forecast = forecast_random_forest_from_artifact(settings.rf_forecast_model_path, series, horizon=horizon)
+    if not forecast.available:
+        return _linear_regression_predict(series, horizon=horizon)
+
+    runtime_prediction = _linear_regression_predict(series, horizon=horizon)
+    if not series:
+        return forecast.value
+
+    recent_window = min(6, len(series))
+    runtime_level = float(np.mean(series[-recent_window:]))
+    if runtime_level <= 0 or forecast.baseline_mean <= 0:
+        return forecast.value
+
+    scaled_forecast = forecast.value * (runtime_level / forecast.baseline_mean)
+    blended = 0.75 * scaled_forecast + 0.25 * runtime_prediction
+    return max(0.0, float(blended))
+
+
 @app.get("/forecast", response_model=ForecastResponse)
 def forecast(mode: str = "predictive", algorithm: str = "arima") -> ForecastResponse:
     series = _fetch_rps_series()
@@ -81,13 +105,17 @@ def forecast(mode: str = "predictive", algorithm: str = "arima") -> ForecastResp
         predicted = observed
     elif algorithm == "arima":
         predicted = _arima_predict(series)
+    elif algorithm in {"random_forest", "rf"}:
+        algorithm = "random_forest"
+        predicted = _random_forest_predict(series)
     elif algorithm == "moving_average":
         predicted = _moving_average_predict(series)
     else:
+        algorithm = "linear_regression"
         predicted = _linear_regression_predict(series)
 
     with SessionLocal() as session:
-        session.add(ForecastPoint(mode=mode, predicted_rps=predicted))
+        session.add(ForecastPoint(mode=mode, algorithm=algorithm, predicted_rps=predicted))
         session.commit()
 
     return ForecastResponse(mode=mode, predicted_rps=predicted, observed_rps=observed)
@@ -105,6 +133,9 @@ def forecast_series(horizon: int = 12, algorithm: str = "arima") -> dict:
             value = _moving_average_predict(series, horizon=step)
         elif algorithm == "linear_regression":
             value = _linear_regression_predict(series, horizon=step)
+        elif algorithm in {"random_forest", "rf"}:
+            algorithm = "random_forest"
+            value = _random_forest_predict(series, horizon=step)
         else:
             value = _arima_predict(series, horizon=step)
         points.append(
@@ -116,3 +147,30 @@ def forecast_series(horizon: int = 12, algorithm: str = "arima") -> dict:
         )
 
     return {"mode": "predictive", "algorithm": algorithm, "points": points}
+
+
+@app.get("/models/comparison")
+def model_comparison() -> dict:
+    """Return holdout metrics saved inside trained forecasting artifacts."""
+    models = []
+    artifacts = [
+        ("arima", load_arima_artifact(settings.forecast_model_path)),
+        ("random_forest", load_random_forest_artifact(settings.rf_forecast_model_path)),
+    ]
+    for name, artifact in artifacts:
+        if artifact is None:
+            models.append({"algorithm": name, "available": False, "mae": None, "rmse": None, "mape": None})
+            continue
+        metrics = artifact.get("metrics", {})
+        models.append(
+            {
+                "algorithm": name,
+                "available": True,
+                "train_size": artifact.get("train_size", 0),
+                "test_size": artifact.get("test_size", 0),
+                "mae": metrics.get("mae", 0.0),
+                "rmse": metrics.get("rmse", 0.0),
+                "mape": metrics.get("mape", 0.0),
+            }
+        )
+    return {"models": models}

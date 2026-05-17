@@ -45,6 +45,7 @@ services:
     environment:
       METRICS_DB_URL: sqlite:////data/metrics.db
       FORECAST_MODEL_PATH: /app/models/arima_workload_forecast.pkl
+      RF_FORECAST_MODEL_PATH: /app/models/random_forest_workload_forecast.pkl
     ports:
       - "8003:8003"
     volumes:
@@ -60,6 +61,7 @@ services:
       METRICS_DB_URL: sqlite:////data/metrics.db
       PREDICTOR_URL: http://predictor:8003
       TARGET_RPS_PER_REPLICA: 8
+      PREDICTIVE_ALGORITHM: arima
       MIN_REPLICAS: 1
       MAX_REPLICAS: 3
     volumes:

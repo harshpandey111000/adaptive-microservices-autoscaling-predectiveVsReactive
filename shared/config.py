@@ -17,6 +17,7 @@ class Settings:
     gateway_port: int = int(os.getenv("GATEWAY_PORT", "8000"))
     prediction_window: int = int(os.getenv("PREDICTION_WINDOW", "15"))
     forecast_model_path: str = os.getenv("FORECAST_MODEL_PATH", "models/arima_workload_forecast.pkl")
+    rf_forecast_model_path: str = os.getenv("RF_FORECAST_MODEL_PATH", "models/random_forest_workload_forecast.pkl")
     forecast_dataset_path: str = os.getenv("FORECAST_DATASET_PATH", "data/external/twitter_volume_aapl.csv")
     forecast_processed_path: str = os.getenv("FORECAST_PROCESSED_PATH", "data/processed/workload_series.csv")
     target_rps_per_replica: float = float(os.getenv("TARGET_RPS_PER_REPLICA", "8"))

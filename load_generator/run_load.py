@@ -24,6 +24,7 @@ from shared.config import settings
 
 DEFAULT_MIN_RPS = 2.0
 DEFAULT_MAX_RPS = 24.0
+DEFAULT_TEST_SPLIT_RATIO = 0.2
 
 
 def worker(base_url: str, stop_event: threading.Event, sleep_s: float) -> None:
@@ -96,8 +97,17 @@ def _load_workload_series(
     return _rescale_series(series.astype(float), min_rps, max_rps)
 
 
-def _duration_slice(series: pd.Series, duration_s: int, start_index: int | None) -> np.ndarray:
+def _duration_slice(
+    series: pd.Series,
+    duration_s: int,
+    start_index: int | None,
+    test_split_ratio: float = DEFAULT_TEST_SPLIT_RATIO,
+) -> np.ndarray:
     values = series.to_numpy(dtype=float)
+    if start_index is None and 0 < test_split_ratio < 1 and len(values) > duration_s:
+        holdout_start = int(len(values) * (1 - test_split_ratio))
+        values = values[holdout_start:]
+
     if len(values) >= duration_s:
         max_start = len(values) - duration_s
         if start_index is None:
@@ -126,9 +136,10 @@ def run_dataset_profile(
     min_rps: float,
     max_rps: float,
     start_index: int | None = None,
+    test_split_ratio: float = DEFAULT_TEST_SPLIT_RATIO,
 ) -> None:
     series = _load_workload_series(dataset_path, processed_path, min_rps, max_rps)
-    targets = _duration_slice(series, duration_s, start_index)
+    targets = _duration_slice(series, duration_s, start_index, test_split_ratio)
     max_workers = max(4, min(64, int(math.ceil(float(np.max(targets)))) * 2))
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -157,6 +168,7 @@ if __name__ == "__main__":
     parser.add_argument("--min-rps", type=float, default=DEFAULT_MIN_RPS)
     parser.add_argument("--max-rps", type=float, default=DEFAULT_MAX_RPS)
     parser.add_argument("--start-index", type=int, default=None)
+    parser.add_argument("--test-split-ratio", type=float, default=DEFAULT_TEST_SPLIT_RATIO)
     args = parser.parse_args()
     if args.profile == "synthetic":
         run_synthetic_profile(args.base_url, args.duration)
@@ -169,4 +181,5 @@ if __name__ == "__main__":
             min_rps=args.min_rps,
             max_rps=args.max_rps,
             start_index=args.start_index,
+            test_split_ratio=args.test_split_ratio,
         )

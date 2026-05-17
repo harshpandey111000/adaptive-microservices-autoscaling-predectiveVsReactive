@@ -1,32 +1,196 @@
 # Adaptive Auto-Scaling of Microservices Using Predictive Workload Analysis
 
-Production-style, dockerized microservices project that demonstrates **reactive vs predictive horizontal auto-scaling** using workload forecasting.
+A dockerized microservices project that compares **reactive** and **predictive**
+horizontal auto-scaling. Predictive scaling forecasts workload RPS using real
+time-series data and trained models.
 
-This repository is structured for both implementation testing and thesis/report documentation.
+## What This Project Includes
 
-## Implemented Modules
-
-- **API Gateway** (`gateway_service`): forwards client requests and publishes latency/status metrics.
-- **Stateless Microservice Replicas** (`service_app`): three independent FastAPI workers.
-- **Monitoring Service** (`monitoring_service`): stores time-series metrics in SQLite.
-- **Prediction Engine** (`prediction_engine`): supports **ARIMA**, Linear Regression, and Moving Average forecasting.
-- **Auto-Scaling Controller** (`autoscaling_controller`): computes desired replicas in `reactive` or `predictive` modes.
-- **Load Generator** (`load_generator`): replays a public workload-derived RPS series, with a synthetic fallback profile.
-- **Evaluation Module** (`evaluation_module`): auto-generates latency, scaling, and workload comparison plots.
+- **API Gateway**: routes requests to active service replicas and records metrics.
+- **Service Replicas**: three FastAPI worker replicas.
+- **Monitoring Service**: stores request latency, status, and workload metrics in SQLite.
+- **Prediction Engine**: forecasts workload using ARIMA, Random Forest, Linear Regression, or Moving Average.
+- **Auto-Scaling Controller**: chooses active replicas in reactive or predictive mode.
+- **Load Generator**: replays a real-data workload profile, with a synthetic fallback.
+- **Dashboard**: Streamlit dashboard for live charts and model comparison.
+- **Evaluation Module**: exports report-ready plots.
 
 ## Architecture
 
 ```text
-User Requests
+Load Generator
   -> API Gateway
-  -> Microservice Replicas
-  -> Monitoring Service (stores metrics)
-  -> Prediction Engine (forecasts RPS using trained ARIMA or statistical baselines)
-  -> Auto-Scaling Controller (reactive/predictive)
-  -> Active Replica Count (1..3)
+  -> Service Replicas
+  -> Monitoring Service
+  -> Prediction Engine
+  -> Auto-Scaling Controller
+  -> Active Replica Count
 ```
 
-## Directory Layout
+## Run Commands
+
+Run these commands one by one from the project root.
+
+### 1. Install Python dependencies
+
+```bash
+pip install -e .
+```
+
+### 2. Train forecasting models
+
+This trains both ARIMA and Random Forest using the real NAB Twitter-volume
+dataset converted into an RPS-like workload.
+
+```bash
+PYTHONPATH=. python3 scripts/train_arima_model.py
+```
+
+Generated files:
+
+- `data/processed/workload_series.csv`
+- `models/arima_workload_forecast.pkl`
+- `models/random_forest_workload_forecast.pkl`
+
+### 3. Start all microservices
+
+```bash
+docker compose up --build -d
+```
+
+### 4. Check service state
+
+```bash
+curl http://localhost:8004/state
+```
+
+### 5. Run reactive scaling test
+
+```bash
+curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"reactive"}'
+```
+
+```bash
+PYTHONPATH=. python3 -m load_generator.run_load --base-url http://localhost:8000 --duration 90
+```
+
+### 6. Run predictive scaling test with ARIMA
+
+```bash
+curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"predictive"}'
+```
+
+```bash
+curl -X POST http://localhost:8004/algorithm -H "Content-Type: application/json" -d '{"algorithm":"arima"}'
+```
+
+```bash
+PYTHONPATH=. python3 -m load_generator.run_load --base-url http://localhost:8000 --duration 90
+```
+
+### 7. Run predictive scaling test with Random Forest
+
+```bash
+curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"predictive"}'
+```
+
+```bash
+curl -X POST http://localhost:8004/algorithm -H "Content-Type: application/json" -d '{"algorithm":"random_forest"}'
+```
+
+```bash
+PYTHONPATH=. python3 -m load_generator.run_load --base-url http://localhost:8000 --duration 90
+```
+
+### 8. Open Streamlit dashboard
+
+Run this in a separate terminal while Docker services are running.
+
+```bash
+PYTHONPATH=. streamlit run dashboard.py
+```
+
+Then open:
+
+```text
+http://localhost:8501
+```
+
+### 9. Export evaluation charts
+
+```bash
+PYTHONPATH=. python3 -m evaluation_module.evaluate
+```
+
+Generated outputs:
+
+- `outputs/latency_stability.png`
+- `outputs/replica_decisions.png`
+- `outputs/workload_comparison.png`
+- `outputs/model_comparison.png`
+- `outputs/model_comparison_metrics.csv`
+- `outputs/model_forecast_history.png` when predictive forecast history exists
+
+### 10. Stop services
+
+```bash
+docker compose down
+```
+
+## Useful Optional Commands
+
+Run synthetic workload instead of real-data workload:
+
+```bash
+PYTHONPATH=. python3 -m load_generator.run_load --profile synthetic --duration 90
+```
+
+Replay a specific real-data workload segment:
+
+```bash
+PYTHONPATH=. python3 -m load_generator.run_load --duration 120 --start-index 400 --min-rps 2 --max-rps 24
+```
+
+Call the predictor directly:
+
+```bash
+curl "http://localhost:8003/forecast?mode=predictive&algorithm=arima"
+```
+
+```bash
+curl "http://localhost:8003/forecast?mode=predictive&algorithm=random_forest"
+```
+
+View model comparison metrics:
+
+```bash
+curl http://localhost:8003/models/comparison
+```
+
+## Forecasting Models
+
+The project uses `data/external/twitter_volume_aapl.csv` from the Numenta
+Anomaly Benchmark. The data is converted into an RPS-like workload series and
+split into training and held-out evaluation portions.
+
+Supported predictive algorithms:
+
+- `arima`
+- `random_forest`
+- `linear_regression`
+- `moving_average`
+
+Predictive mode uses ARIMA by default. Random Forest is included as a stronger
+machine-learning baseline using lag features from the workload series.
+
+## APIs
+
+- Gateway: `GET /request`
+- Monitoring: `POST /metrics`, `GET /stats/window`
+- Predictor: `GET /forecast`, `GET /forecast/series`, `GET /models/comparison`
+- Scaler: `GET /state`, `POST /mode`, `POST /algorithm`
+
+## Project Structure
 
 ```text
 .
@@ -39,110 +203,17 @@ User Requests
 ├── service_app/
 ├── shared/
 ├── scripts/
+├── data/
+├── models/
 ├── outputs/
-├── Dockerfile
+├── dashboard.py
 ├── docker-compose.yml
 └── README.md
 ```
 
-## Quick Start
-
-### 1) Train the ARIMA workload model
-
-The repository includes a downloaded public NAB Twitter-volume time-series dataset at
-`data/external/twitter_volume_aapl.csv`. It is preprocessed into a smooth RPS-like
-workload signal and used to train an ARIMA model:
-
-```bash
-PYTHONPATH=. python3 scripts/train_arima_model.py
-```
-
-This writes:
-
-- `data/processed/workload_series.csv`
-- `models/arima_workload_forecast.pkl`
-
-### 2) Build and start services
-
-```bash
-docker compose up --build -d
-```
-
-### 3) Generate realistic workload (reactive mode)
-
-```bash
-curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"reactive"}'
-python -m load_generator.run_load --base-url http://localhost:8000 --duration 90
-```
-
-By default, the load generator replays `data/processed/workload_series.csv`, which
-is derived from the public NAB Twitter-volume dataset. Each second of the
-experiment uses one point from the dataset-shaped RPS signal. To replay a
-specific segment or scale the generated request rate:
-
-```bash
-python -m load_generator.run_load --duration 120 --start-index 400 --min-rps 2 --max-rps 24
-```
-
-The old four-phase workload is still available:
-
-```bash
-python -m load_generator.run_load --profile synthetic --duration 90
-```
-
-### 4) Generate realistic workload (predictive mode)
-
-```bash
-curl -X POST http://localhost:8004/mode -H "Content-Type: application/json" -d '{"mode":"predictive"}'
-python -m load_generator.run_load --base-url http://localhost:8000 --duration 90
-```
-
-Predictive mode uses the trained ARIMA model by default. You can still call the
-predictor with `algorithm=moving_average` or `algorithm=linear_regression` for
-baseline comparisons.
-
-### 5) Export evaluation graphs
-
-```bash
-python -m evaluation_module.evaluate
-```
-
-Generated outputs are written to:
-
-- `outputs/latency_stability.png`
-- `outputs/replica_decisions.png`
-- `outputs/workload_comparison.png`
-
-The latency plot separates rolling average and p95 latency by scaler mode. The
-replica plot overlays desired replicas with observed RPS so scaling decisions
-have workload context. The workload comparison plot shows observed RPS, forecast
-RPS, and the forecast gap, with a compact mode summary for reporting.
-
-## Horizontal Scaling Simulation
-
-Actual container replicas (`service1`, `service2`, `service3`) run continuously. The auto-scaler updates active capacity (`active_replicas`), and the gateway only routes traffic to the first N replicas, simulating dynamic horizontal scaling decisions while keeping orchestration simple and reproducible.
-
-## APIs
-
-- Gateway: `GET /request`
-- Monitoring: `POST /metrics`, `GET /stats/window`
-- Predictor: `GET /forecast?mode=predictive&algorithm=arima`, `GET /forecast/series`
-- Scaler: `GET /state`, `POST /mode`
-
-## Tech Stack
-
-- Python 3.11+
-- FastAPI + Uvicorn
-- SQLAlchemy + SQLite
-- scikit-learn
-- statsmodels / ARIMA
-- matplotlib/pandas
-- Streamlit + Plotly dashboard
-- Docker + Docker Compose
-
 ## Notes
 
-- Database path in containers: `sqlite:////data/metrics.db`
-- Scaling bounds configurable via environment variables (`MIN_REPLICAS`, `MAX_REPLICAS`).
-- Forecasting defaults to ARIMA in predictive mode and current observed load in reactive mode.
-- Public dataset source: Numenta Anomaly Benchmark (NAB), `realTweets/Twitter_volume_AAPL.csv`.
+- Docker uses SQLite at `sqlite:////data/metrics.db`.
+- Scaling bounds are configurable with `MIN_REPLICAS` and `MAX_REPLICAS`.
+- `TARGET_RPS_PER_REPLICA` controls how much RPS one replica is expected to handle.
+- The gateway simulates horizontal scaling by routing only to the active replica count chosen by the scaler.

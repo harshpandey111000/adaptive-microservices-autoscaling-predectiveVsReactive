@@ -14,9 +14,11 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from shared.config import settings
+from prediction_engine.workload_forecaster import load_arima_artifact, load_random_forest_artifact
 
 SLA_MS = 120
 MODE_COLORS = {"reactive": "#1f77b4", "predictive": "#d62728"}
+MODEL_COLORS = {"arima": "#9467bd", "random_forest": "#2ca02c"}
 
 
 def _add_mode_to_metrics(metrics: pd.DataFrame, decisions: pd.DataFrame) -> pd.DataFrame:
@@ -68,6 +70,17 @@ def export_plots(output_dir: str = "outputs") -> None:
     decisions = pd.read_sql(
         "SELECT timestamp, mode, observed_rps, predicted_rps, desired_replicas FROM scaling_decisions ORDER BY timestamp", engine
     )
+    try:
+        forecasts = pd.read_sql(
+            "SELECT timestamp, mode, algorithm, predicted_rps FROM forecast_points ORDER BY timestamp",
+            engine,
+        )
+    except Exception:
+        forecasts = pd.read_sql(
+            "SELECT timestamp, mode, predicted_rps FROM forecast_points ORDER BY timestamp",
+            engine,
+        )
+        forecasts["algorithm"] = "unknown"
 
     if not metrics.empty:
         metrics["timestamp"] = pd.to_datetime(metrics["timestamp"])
@@ -211,6 +224,77 @@ def export_plots(output_dir: str = "outputs") -> None:
         plt.tight_layout()
         plt.savefig(out / "workload_comparison.png")
         plt.close()
+
+    _export_model_comparison(out)
+
+    if not forecasts.empty:
+        forecasts["timestamp"] = pd.to_datetime(forecasts["timestamp"])
+        model_history = forecasts[forecasts["mode"] == "predictive"].copy()
+        model_history = model_history[model_history["algorithm"].isin(["arima", "random_forest"])]
+        if not model_history.empty:
+            fig, ax = plt.subplots(figsize=(12, 5))
+            for algorithm in ["arima", "random_forest"]:
+                subset = model_history[model_history["algorithm"] == algorithm].sort_values("timestamp")
+                if subset.empty:
+                    continue
+                ax.plot(
+                    subset["timestamp"],
+                    subset["predicted_rps"].rolling(window=4, min_periods=1).mean(),
+                    label=f"{algorithm.replace('_', ' ').title()} forecast",
+                    linewidth=2,
+                    color=MODEL_COLORS[algorithm],
+                )
+            ax.set_title("Predictive Model Forecast History")
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Predicted RPS")
+            ax.grid(True, alpha=0.25)
+            ax.legend(fontsize=8)
+            plt.tight_layout()
+            plt.savefig(out / "model_forecast_history.png")
+            plt.close()
+
+
+def _export_model_comparison(out: Path) -> None:
+    rows = []
+    for algorithm, artifact in [
+        ("arima", load_arima_artifact(settings.forecast_model_path)),
+        ("random_forest", load_random_forest_artifact(settings.rf_forecast_model_path)),
+    ]:
+        if artifact is None:
+            continue
+        metrics = artifact.get("metrics", {})
+        rows.append(
+            {
+                "algorithm": algorithm,
+                "mae": float(metrics.get("mae", 0.0)),
+                "rmse": float(metrics.get("rmse", 0.0)),
+                "mape": float(metrics.get("mape", 0.0)),
+            }
+        )
+
+    if not rows:
+        return
+
+    comparison = pd.DataFrame(rows)
+    comparison.to_csv(out / "model_comparison_metrics.csv", index=False)
+
+    labels = [value.replace("_", " ").title() for value in comparison["algorithm"]]
+    x = range(len(comparison))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar([value - width / 2 for value in x], comparison["mae"], width=width, label="MAE", color="#4c78a8")
+    ax.bar([value + width / 2 for value in x], comparison["rmse"], width=width, label="RMSE", color="#f58518")
+    ax.set_title("Forecast Model Holdout Error")
+    ax.set_ylabel("RPS error")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels)
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend()
+    for index, row in comparison.iterrows():
+        ax.text(index, max(row["mae"], row["rmse"]) + 0.1, f"MAPE {row['mape']:.1f}%", ha="center", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out / "model_comparison.png")
+    plt.close()
 
 
 if __name__ == "__main__":

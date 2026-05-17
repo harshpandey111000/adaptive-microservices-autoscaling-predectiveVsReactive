@@ -31,6 +31,7 @@ class ForecastPoint(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     mode: Mapped[str] = mapped_column(String(32), index=True)
+    algorithm: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
     predicted_rps: Mapped[float] = mapped_column(Float)
 
 

@@ -19,6 +19,7 @@ from shared.models import ActiveReplicaState, ScalingDecision
 from shared.schemas import ScaleDecisionResponse, ScaleModeRequest
 
 POLL_INTERVAL = float(os.getenv("SCALER_POLL_INTERVAL", "5"))
+predictive_algorithm = os.getenv("PREDICTIVE_ALGORITHM", "arima")
 
 app = FastAPI(title="Auto-Scaling Controller")
 stop_event = threading.Event()
@@ -52,7 +53,10 @@ def _control_loop() -> None:
                 mode = state.mode
 
             with httpx.Client(timeout=3.0) as client:
-                forecast_resp = client.get(f"{settings.predictor_url}/forecast", params={"mode": mode})
+                forecast_resp = client.get(
+                    f"{settings.predictor_url}/forecast",
+                    params={"mode": mode, "algorithm": predictive_algorithm},
+                )
                 forecast_resp.raise_for_status()
                 payload = forecast_resp.json()
 
@@ -115,7 +119,17 @@ def stop_loop() -> None:
 def get_state() -> dict[str, str | int]:
     with SessionLocal() as session:
         state = _get_state(session)
-        return {"mode": state.mode, "active_replicas": state.active_replicas}
+        return {"mode": state.mode, "active_replicas": state.active_replicas, "predictive_algorithm": predictive_algorithm}
+
+
+@app.post("/algorithm")
+def set_algorithm(request: dict[str, str]) -> dict[str, str]:
+    global predictive_algorithm
+    algorithm = request.get("algorithm", "arima")
+    if algorithm not in {"arima", "random_forest", "moving_average", "linear_regression"}:
+        raise HTTPException(status_code=400, detail="unsupported predictive algorithm")
+    predictive_algorithm = algorithm
+    return {"predictive_algorithm": predictive_algorithm}
 
 
 @app.post("/mode", response_model=ScaleDecisionResponse)
